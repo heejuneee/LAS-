@@ -1,0 +1,1132 @@
+/*
+ *   Steps
+ *
+ *   0. 서버에서 nodejs 호출 (devPk, fileInfPk)
+ *   1. 본문 텍스트 전체를 읽는다.
+ *   2. 페이지의 시작과 끝을 읽어서 페이지를 파싱하고 
+ *   3. Seq 영역을 파악하고 Seq 값을 파싱한다.
+ *   4. Element 값의 영역을 파악하고, Element 데이터를 파싱하면서 라인(Ln)/위치(Col) 정보도 파싱한다.
+ *   5. SST, STD, RST 를 파싱한다.
+ *   6. json schema 를 통해 유효성을 확인한다.
+ *   7. 파싱결과를 저장한다.
+ */
+
+const Ajv = require('ajv');
+const { generatePostData, generateURLData, fetch, jsonToQueryString, format } = require('./utils/common');
+const { API, apiInfo } = require('./utils/app.json')
+
+let ajv = new Ajv({ strict: false });
+let schema;
+
+const { argv } = require('yargs/yargs')(process.argv.slice(2)).boolean(['isTest']);
+console.log(argv);
+
+let { devPk, fileInfPk, userId, comCd, hostname, port, lang, lxExecPk, isTest } = argv;
+if (typeof devPk == 'undefined') {
+    devPk = 82;
+}
+console.log('devPk ', devPk);
+if (typeof fileInfPk == 'undefined') {
+    fileInfPk = 1041;
+}
+console.log('fileInfPk ', fileInfPk);
+if (typeof userId == 'undefined') {
+    userId = apiInfo.reportId;
+}
+console.log('userId ', userId);
+if (typeof comCd == 'undefined') {
+	comCd = '0000';
+}
+console.log('comCd ', comCd);
+if (typeof lang == 'undefined') {
+	lang = apiInfo.lang;
+}
+console.log('lang ', lang);
+if (typeof lxExecPk == 'undefined') {
+    lxExecPk = 0;
+}
+console.log('lxExecPk ', lxExecPk);
+if (typeof isTest == 'undefined') {
+    isTest = true;
+}
+console.log('isTest ', isTest);
+
+let fileDiv;
+
+let keyValue = {
+    key: ''
+    , value: ''
+    , unit: ''
+}
+let item = {
+    number: 0
+    , Ln: -1
+    , Col: -1
+    , text: ''
+    , search: {}
+    , items: []
+    , elements: []
+    , groupIdx: -1
+    , isDataStart: false
+    , isDataEnd: false
+    , isSeq: false
+    , isSeqProperty: false
+    , isSeqData: false
+    , isElement: false
+    , isDataHeader: false
+    , isSST: false
+    , isSTD: false
+    , isRST: false
+    , isFIELD: false
+    , isDATA: false
+    , isProperty: false
+    , isAlias: false
+};
+let mappings = {
+    items: []
+};
+
+// 1.
+const stepOne = (devPk, fileInfPk) => {
+    return new Promise(async (resolve, reject) => {
+        console.log('stepOne');
+        try {
+	        let postData = await generatePostData({
+	            devPk
+	            , fileInfPk
+	            , comCd
+	            , userId
+	            , hostname
+	            , port
+	            , lang
+	        })
+            if (!postData || postData.status >= 400) {
+                return reject(postData);
+            }
+	        let options = generateURLData({
+	            path: API.LAS.reportFileData.URL + '?' + jsonToQueryString(postData, true)
+	            , method: API.LAS.reportFileData.METHOD
+	            , hostname
+	            , port
+	            , lang
+	        })
+	        let { responseJSON } = await fetch(null, options);
+	        if (responseJSON.status >= 400) {
+	            // 파싱 에러로 처리
+	            reject(responseJSON);
+	        }
+	        else {
+                if (responseJSON.error) {
+                    reject(responseJSON);
+                }
+                else {
+                    let error;
+                    if (responseJSON.data) {
+                        if (responseJSON.data.content) {
+                            if (isTest) {
+                                console.log(responseJSON.data.content);
+                            }
+                            fileDiv = responseJSON.data.fileDiv;
+                            schema = JSON.parse(responseJSON.data.parsRuleData);
+                            resolve(responseJSON.data);
+                        }
+                        else {
+                            error = `Can't parse empty file`;
+                            reject({
+                                error
+                            })
+                        }
+                    }
+                    else {
+                        error = `Can't read file`;
+                        if (responseJSON.msg) {
+                            error = responseJSON.msg;
+                        }
+                        else if (responseJSON.error) {
+                            error = responseJSON.error;
+                        }
+                        reject({
+                            error
+                        })
+                    }
+                }
+            }
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+// 2.
+const stepTwo = ({ content, orgFileNm }) => {
+    return new Promise(async (resolve, reject) => {
+        console.log('stepTwo');
+        try {
+            // 결과 
+            let pages = [];
+            // page
+            let fstLine = {
+                cond1: /Batch Summary Report/,
+            };
+            let lstLine = {};
+            let pageNumber = 1;
+            let lineNumber = 1;
+            let data;
+            switch (fileDiv) {
+                case 'pdf':
+                    break;
+                case 'csv':
+                    
+                    break;
+                case 'txt':
+                default:
+                    // raw content
+                    break;
+            }
+            let isFirst = true;
+            // line 파싱
+            data = content.split('\n');
+            data.forEach(line => {
+                let isParsed = false;
+                if (!line.trim()) {
+                    let emptyLine = Object.assign({}, item);
+                    emptyLine.number = pageNumber;
+                    emptyLine.Ln = lineNumber;
+                    emptyLine.Col = 0;
+                    pages.push(emptyLine);
+                    isParsed = true;
+                }
+                let matches = line.match(fstLine.cond1);
+                if (matches && matches.length) {
+                    if (!isFirst) {
+                        pageNumber += 1;
+                    }
+                    if (isFirst && pageNumber >= 1) {
+                        isFirst = false;
+                    }
+                    let lst = Object.assign({}, item);
+                    lst.number = pageNumber;
+                    lst.text = line.trim();
+                    lst.Ln = lineNumber;
+                    lst.Col = matches.index;
+                    pages.push(lst);
+                    lineNumber = 1;
+                    isParsed = true;
+                }
+                if (!isParsed) {
+                    let restLine = Object.assign({}, item);
+                    restLine.number = pageNumber;
+                    restLine.Ln = lineNumber;
+                    restLine.Col = 0;
+                    restLine.text = line.toString();
+                    pages.push(restLine);
+                    isParsed = true;
+                }
+                lineNumber += 1;
+            });
+            resolve(pages);
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+// 3.
+const stepThree = (pages) => {
+    return new Promise(async (resolve, reject) => {
+        console.log('stepThree');
+        try {
+            switch (fileDiv) {
+                case 'pdf':
+                    break;
+                case 'csv':
+                    
+                    break;
+                case 'txt':
+                default:
+                    // raw content
+                    break;
+            }
+            let SEQ_PROPERTY_AREA = {
+                cond1: /Analyte Table/,
+            };
+            let isEnd = false;
+            pages.forEach(page => {
+                if (!isEnd) {
+                    let matches = page.text.match(SEQ_PROPERTY_AREA.cond1);
+                    if (matches && matches.length) {
+                        page.isSeqProperty = false;
+                        isEnd = true;
+                        return;
+                    }
+                    if (page.text) {
+                        page.isSeqProperty = true;
+                    }
+                }
+            });
+            let SEQ_AREA = {
+                cond1: /(\d+) +([0-9]{1,4}[\-\/\.][0-9]{1,4}[\-\/\.][0-9]{1,4} [0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2} [A-Z]M) +([a-zA-Z0-9\_\.]+)/,
+            };
+            isEnd = false;
+            pages.forEach(page => {
+                if (page.isSeqProperty) {
+                    let matches = page.text.match(SEQ_AREA.cond1);
+                    if (matches && matches.length) {
+                        page.isSeqData = true;
+                    }
+                }
+            });
+            const SEQ_PROPERTY = {
+                SEQ: {
+                    origin: 'Seq',
+                    alia: 'Seq',
+                    isAlias: false,
+                    isHasValue: true,
+                    isSeq: true,
+                    cond1: /(\d+)/,
+                },
+                RJCT: {
+                    origin: 'Rjct',
+                    alia: 'Rjct',
+                    isAlias: false,
+                    isHasValue: false,
+                    isSeq: false,
+                    cond1: null,
+                },
+                ACQ_DATE_TIME: {
+                    origin: 'Acq. Date-Time',
+                    alia: 'Acq. Date-Time',
+                    isAlias: false,
+                    isHasValue: true,
+                    isSeq: true,
+                    cond1: /([0-9]{1,4}[\-\/\.][0-9]{1,4}[\-\/\.][0-9]{1,4} [0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2} [A-Z]M)/,
+                },
+                DATA_FILE: {
+                    origin: 'Data File',
+                    alia: 'Data File',
+                    isAlias: false,
+                    isHasValue: true,
+                    isSeq: false,
+                    cond1: /([a-zA-Z]+ ?[a-zA-Z0-9\_\.]*)/,
+                },
+                SAMPLE_NAME: {
+                    origin: 'Sample Name',
+                    alia: 'Sample Name',
+                    isAlias: false,
+                    isHasValue: true,
+                    isSeq: false,
+                    cond1: /([a-zA-Z]+ ?[a-zA-Z0-9\_\.]*)/,
+                },
+                TYPE: {
+                    origin: 'Type',
+                    alia: 'Type',
+                    isAlias: false,
+                    isHasValue: true,
+                    isSeq: false,
+                    cond1: /([a-zA-Z0-9\_\.]+)/,
+                },
+                LEVEL: {
+                    origin: 'Level',
+                    alia: 'Level',
+                    isAlias: false,
+                    isHasValue: true,
+                    isSeq: false,
+                    cond1: /([0-9]+)(\.?[0-9]*)/,
+                },
+                DILUTION: {
+                    origin: 'Dilution',
+                    alia: 'Dilution',
+                    isAlias: false,
+                    isHasValue: true,
+                    isSeq: false,
+                    cond1: /([0-9]+)(\.?[0-9]*)/,
+                },
+            };
+            let parseValue = (_PROPERTY, page, text, items) => {
+                if (!Object.keys(_PROPERTY).length) {
+                    return;
+                }
+                let firstKey = Object.keys(_PROPERTY)[0];
+                let property = _PROPERTY[firstKey];
+                let _text = text.toString();
+                if (property.isHasValue) {
+                    let spliter = items.length ? ' ' : '';
+                    let searchedItems = items.map(row => row.search.value);
+                    let matches = text.match(property.cond1);
+                    if (matches && matches.length) {
+                        if (property.origin == 'Level' && matches[2]) {
+                            let datum = Object.assign({}, item)
+                            datum.number = page.number;
+                            datum.Ln = page.Ln;
+                            datum.Col = page.Col;
+                            datum.text = text.toString();
+                            let kv = Object.assign({}, keyValue);
+                            kv.key = property.isAlias ? property.alias : property.origin;
+                            switch (property.type) {
+                                case 'number':
+                                    kv.value = 0;
+                                    break;
+                                default:
+                                    kv.value = '';
+                                    break;
+                            }
+                            datum.search = kv;
+                            items.push(datum);
+                            delete _PROPERTY[firstKey];
+                            parseValue(_PROPERTY, page, _text, items);
+                            return;
+                        }
+                        let datum = Object.assign({}, item)
+                        datum.number = page.number;
+                        datum.Ln = page.Ln;
+                        datum.Col = (searchedItems.join(spliter)).length + matches.index;
+                        datum.text = text.toString();
+                        let kv = Object.assign({}, keyValue);
+                        kv.key = property.isAlias ? property.alias : property.origin;
+                        switch (property.type) {
+                            case 'number':
+                                kv.value = Number(matches[0]);
+                                break;
+                            default:
+                                kv.value = matches[0];
+                                break;
+                        }
+                        datum.search = kv;
+                        items.push(datum);
+                        _text = text.substring(matches[0].length + 1);
+                    }
+                    else {
+                        let datum = Object.assign({}, item)
+                        datum.number = page.number;
+                        datum.Ln = page.Ln;
+                        datum.Col = page.Col;
+                        datum.text = text.toString();
+                        let kv = Object.assign({}, keyValue);
+                        kv.key = property.isAlias ? property.alias : property.origin;
+                        switch (property.type) {
+                            case 'number':
+                                kv.value = 0;
+                                break;
+                            default:
+                                kv.value = '';
+                                break;
+                        }
+                        datum.search = kv;
+                        items.push(datum);
+                        _text = text.toString();
+                    }
+                }
+                else {
+                    let datum = Object.assign({}, item)
+                    datum.number = page.number;
+                    datum.Ln = page.Ln;
+                    datum.Col = page.Col;
+                    datum.text = text.toString();
+                    let kv = Object.assign({}, keyValue);
+                    kv.key = property.isAlias ? property.alias : property.origin;
+                    switch (property.type) {
+                        case 'number':
+                            kv.value = 0;
+                            break;
+                        default:
+                            kv.value = '';
+                            break;
+                    }
+                    datum.search = kv;
+                    items.push(datum);
+                }
+                delete _PROPERTY[firstKey];
+                parseValue(_PROPERTY, page, _text, items);
+            }
+            pages.forEach(page => {
+                if (page.isSeqData) {
+                    let items = [];
+                    let _PROPERTY = Object.assign({}, SEQ_PROPERTY);
+                    parseValue(_PROPERTY, page, page.text.toString(), items);
+                    page.items = Object.assign([], items);
+                }
+            });
+            resolve(pages);
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+// 4.
+let headers = [];
+let uniques = [];
+let repeatCnt = 0;
+const stepFour = (pages) => {
+    return new Promise(async (resolve, reject) => {
+        console.log('stepFour');
+        try {
+            switch (fileDiv) {
+                case 'pdf':
+                    break;
+                case 'csv':
+                    
+                    break;
+                case 'txt':
+                default:
+                    // raw content
+                    break;
+            }
+            let ELEMENT_PROPERTY = {
+                origin: 'EL',
+                alias: 'EL',
+                isAlias: false,
+                cond1: /([0-9]{1,3} +[a-zA-Z]{1,2} +\[ +[a-zA-Z]{1,2} +\])/,
+            }
+            let parseElement = (_PROPERTY, page, text, items) => {
+                if (!text) {
+                    return;
+                }
+                let property = _PROPERTY;
+                let spliter = items.length ? ' ' : '';
+                let searchedItems = items.map(row => row.search.value);
+                let _text = text.toString();
+                let matches = text.match(property.cond1);
+                if (matches && matches.length) {
+                    let datum = Object.assign({}, item)
+                    datum.number = page.number;
+                    datum.Ln = page.Ln;
+                    datum.Col = (searchedItems.join(spliter)).length + matches.index;
+                    datum.text = text.toString();
+                    let kv = Object.assign({}, keyValue);
+                    kv.key = property.isAlias ? property.alias : property.origin;
+                    switch (property.type) {
+                        case 'number':
+                            kv.value = Number(matches[0]);
+                            break;
+                        default:
+                            kv.value = matches[0];
+                            break;
+                    }
+                    datum.search = kv;
+                    items.push(datum);
+                    _text = text.substring(matches[0].length + 1);
+                }
+                else {
+                    let datum = Object.assign({}, item)
+                    datum.number = page.number;
+                    datum.Ln = page.Ln;
+                    datum.Col = page.Col;
+                    datum.text = text.toString();
+                    let kv = Object.assign({}, keyValue);
+                    kv.key = property.isAlias ? property.alias : property.origin;
+                    switch (property.type) {
+                        case 'number':
+                            kv.value = 0;
+                            break;
+                        default:
+                            kv.value = '';
+                            break;
+                    }
+                    datum.search = kv;
+                    items.push(datum);
+                }
+                parseElement(_PROPERTY, page, _text, items);
+            }
+            pages.forEach(page => {
+                let matches = page.text.match(ELEMENT_PROPERTY.cond1);
+                if (matches && matches.length) {
+                    let items = [];
+                    parseElement(ELEMENT_PROPERTY, page, page.text.toString(), items);
+                    page.items = Object.assign([], items);
+                    page.isElement = true;
+                }
+            });
+            // element unique
+            let elements = [];
+            let isParsed = false;
+            repeatCnt = 0;
+            pages.forEach(page => {
+                if (page.isElement) {
+                    page.items.forEach(item => {
+                        elements.push(item.search.value);
+                    });
+                    if (!isParsed) {
+                        repeatCnt = page.items.length;
+                        isParsed = true;
+                    }
+                }
+            });
+            let set = new Set(elements);
+            uniques = [...set];
+            // data header property
+            let DATA_HEADER_PROPERTY = {
+                SEQ: {
+                    origin: 'Seq',
+                    alia: 'Seq',
+                    isAlias: false,
+                    isHasValue: false,
+                    isRepeat: false,
+                    cond1: null,
+                },
+                SAMPLE_NAME: {
+                    origin: 'Sample Name',
+                    alia: 'Sample Name',
+                    isAlias: false,
+                    isHasValue: true,
+                    isRepeat: false,
+                    cond1: /(Sample +Name)/,
+                },
+            };
+            const CONC = {
+                origin: 'Conc.',
+                alias: 'Conc.',
+                isAlias: false,
+                isHasValue: true,
+                isRepeat: true,
+                cond1: /(Conc\.) +\[([\u000-\uFFFF\/a-zA-Z%]+)\]/,
+            };
+            const CPS = {
+                origin: 'CPS',
+                alias: 'CPS',
+                isAlias: false,
+                isHasValue: true,
+                isRepeat: true,
+                cond1: /(CPS)/,
+            };
+            for (let idx = 0; idx < repeatCnt; idx += 1) {
+                DATA_HEADER_PROPERTY[`CONC_${idx}`] = Object.assign({}, CONC);
+                DATA_HEADER_PROPERTY[`CPS_${idx}`] = Object.assign({}, CPS);
+            }
+            let parseHeader = (_PROPERTY, page, text, items) => {
+                if (!text) {
+                    return;
+                }
+                let firstKey = Object.keys(_PROPERTY)[0];
+                let property = _PROPERTY[firstKey];
+                let spliter = items.length ? ' ' : '';
+                let searchedItems = items.map(row => row.search.value);
+                let _text = text.toString();
+                let matches = text.match(property.cond1);
+                if (matches && matches.length) {
+                    let datum = Object.assign({}, item);
+                    datum.number = page.number;
+                    datum.Ln = page.Ln;
+                    datum.Col = (searchedItems.join(spliter)).length + matches.index;
+                    datum.text = text.toString();
+                    let kv = Object.assign({}, keyValue);
+                    kv.key = property.isAlias ? property.alias : property.origin;
+                    switch (property.type) {
+                        case 'number':
+                            kv.value = Number(matches[1]);
+                            break;
+                        default:
+                            kv.value = matches[1] || '';
+                            break;
+                    }
+                    kv.unit = matches[2] || '';
+                    datum.search = kv;
+                    items.push(datum);
+                    _text = text.substring(matches[0].length + 1);
+                }
+                else {
+                    let datum = Object.assign({}, item)
+                    datum.number = page.number;
+                    datum.Ln = page.Ln;
+                    datum.Col = page.Col;
+                    datum.text = text.toString();
+                    let kv = Object.assign({}, keyValue);
+                    kv.key = property.isAlias ? property.alias : property.origin;
+                    switch (property.type) {
+                        case 'number':
+                            kv.value = 0;
+                            break;
+                        default:
+                            kv.value = '';
+                            break;
+                    }
+                    datum.search = kv;
+                    items.push(datum);
+                }
+                delete _PROPERTY[firstKey];
+                parseHeader(_PROPERTY, page, _text, items);
+            };
+            let DATA_HEADER_INFO = {
+                cond1: /Analyte +Table/,
+                cond2: /Sample +Name +Conc\. +/,
+            }
+            let isStart = false;
+            isParsed = false;
+            pages.forEach(page => {
+                let matches = page.text.match(DATA_HEADER_INFO.cond1);
+                if (matches && matches.length && !isParsed) {
+                    isStart = true;
+                }
+                if (isStart) {
+                    matches = page.text.match(DATA_HEADER_INFO.cond2);
+                    if (matches && matches.length) {
+                        let items = [];
+                        let _PROPERTY = Object.assign({}, DATA_HEADER_PROPERTY);
+                        parseHeader(_PROPERTY, page, page.text.toString(), items);
+                        page.items = Object.assign([], items);
+                        page.isDataHeader = true;
+
+                        isParsed = true;
+                        isStart = false;
+                    }
+                }
+            });
+            // property 생성
+            headers = [];
+            pages.find(page => {
+                if (page.isDataHeader) {
+                    page.items.forEach(item => {
+                        headers.push({
+                            key: item.search.value,
+                            unit: item.search.unit,
+                        });
+                    });
+                }
+            });
+            // DATA_AREA 파악
+            let DATA_INFO = {
+                cond1: /Sample +Name +Conc\. +/,
+                cond2: /(\d+) ([a-zA-Z]+ ?[a-zA-Z0-9\_\.]*)/,
+                cond3: /Page/,
+            };
+            isStart = false;
+            pages.forEach(page => {
+                let matches = page.text.match(DATA_INFO.cond1);
+                if (matches && matches.length) {
+                    isStart = true;
+                    return;
+                }
+                if (isStart) {
+                    if (page.text) {
+                        matches = page.text.match(DATA_INFO.cond3);
+                        if (matches && matches.length) {
+                            return;
+                        }
+                        matches = page.text.match(DATA_INFO.cond2);
+                        if (matches && matches.length) {
+                            page.isDATA = true;
+                            return;
+                        }
+                    }
+                }
+            });
+            resolve(pages);
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+// 5.
+const stepFive = (pages) => {
+    return new Promise(async (resolve, reject) => {
+        console.log('stepFive');
+        try {
+            switch (fileDiv) {
+                case 'pdf':
+                    break;
+                case 'csv':
+                    
+                    break;
+                case 'txt':
+                default:
+                    // raw content
+                    break;
+            }
+            let parseValue = (_PROPERTY, page, text, items) => {
+                if (!Object.keys(_PROPERTY).length) {
+                    return;
+                }
+                let firstKey = Object.keys(_PROPERTY)[0];
+                let property = _PROPERTY[firstKey];
+                let spliter = items.length ? ' ' : '';
+                let searchedItems = items.map(row => row.search.value);
+                let _text = text.toString();
+                let matches = text.match(property.cond1);
+                if (matches && matches.length) {
+                    let datum = Object.assign({}, item);
+                    datum.number = page.number;
+                    datum.Ln = page.Ln;
+                    datum.Col = (searchedItems.join(spliter)).length + matches.index;
+                    datum.text = text.toString();
+                    let kv = Object.assign({}, keyValue);
+                    kv.key = property.isAlias ? property.alias : property.origin;
+                    switch (property.type) {
+                        case 'number':
+                            kv.value = Number(matches[1]);
+                            break;
+                        default:
+                            kv.value = matches[1] || '';
+                            break;
+                    }
+                    kv.unit = matches[2] || '';
+                    datum.search = kv;
+                    items.push(datum);
+                    _text = text.substring(matches[0].length + 1);
+                }
+                else {
+                    let datum = Object.assign({}, item)
+                    datum.number = page.number;
+                    datum.Ln = page.Ln;
+                    datum.Col = page.Col;
+                    datum.text = text.toString();
+                    let kv = Object.assign({}, keyValue);
+                    kv.key = property.isAlias ? property.alias : property.origin;
+                    switch (property.type) {
+                        case 'number':
+                            kv.value = 0;
+                            break;
+                        default:
+                            kv.value = '';
+                            break;
+                    }
+                    datum.search = kv;
+                    items.push(datum);
+                }
+                delete _PROPERTY[firstKey];
+                parseValue(_PROPERTY, page, _text, items);
+            };
+            let DATA_PROPERTY = {
+                SEQ: {
+                    origin: 'Seq',
+                    alia: 'Seq',
+                    isAlias: false,
+                    isHasValue: true,
+                    isDATA: false,
+                    cond1: /(\d+)/,
+                },
+                SAMPLE_NAME: {
+                    origin: 'Sample Name',
+                    alia: 'Sample Name',
+                    isAlias: false,
+                    isHasValue: true,
+                    isDATA: false,
+                    cond1: /([a-zA-Z]+ ?[a-zA-Z0-9\_\.]*)/,
+                },
+            };
+            const CONC_DATA = {
+                origin: 'Conc.',
+                alias: 'Conc',
+                isAlias: true,
+                isHasValue: true,
+                isDATA: true,
+                cond1: /(-?[0-9eE.]+-?[0-9.]+)/,
+            };
+            const CPS_DATA = {
+                origin: 'CPS',
+                alias: 'CPS',
+                isAlias: false,
+                isHasValue: true,
+                isDATA: true,
+                cond1: /(-?[0-9eE.]+-?[0-9.]+)/,
+            };
+            for (let idx = 0; idx < repeatCnt; idx += 1) {
+                DATA_PROPERTY[`CONC_DATA_${idx}`] = Object.assign({}, CONC_DATA);
+                DATA_PROPERTY[`CPS_DATA_${idx}`] = Object.assign({}, CPS_DATA);
+            }
+            let CHECK_PROPERTY = {
+                cond1: /(WASH|CAL)/,
+                cond2: /(SST)/,
+            };
+            let checkSeq = {
+                cond1: /(\d+) ([a-zA-Z]+ ?[a-zA-Z0-9\_\.]*)/,
+            }
+            let maxSeq = Math.max(...pages.filter(page => page.isSeqData).map(page => +page.items[0].search.value))
+            let elements = Object.assign([], uniques);
+            let curElemnts = [];
+            let groupCnt = 1;
+            pages.forEach(page => {
+                if (page.isDATA) {
+                    let matches = page.text.match(checkSeq.cond1);
+                    if (matches && matches.length) {
+                        let startPos = groupCnt == 1 ? 0 : (groupCnt - 1) * repeatCnt;
+                        let endPos = repeatCnt * groupCnt;
+                        curElemnts = elements.slice(startPos, endPos);
+                        page.elements = Object.assign([], curElemnts);
+                        page.groupIdx = groupCnt - 1;
+                        if (matches[1] == maxSeq) {
+                            // next elements group
+                            groupCnt += 1;
+                            if (groupCnt * repeatCnt >= maxSeq) {
+                                groupCnt = 1;
+                            }
+                        }
+                    }
+                }
+            });
+            // 데이터 파싱 (SST, RST)
+            pages.forEach(page => {
+                if (page.isDATA) {
+                    let matches = page.text.match(CHECK_PROPERTY.cond1);
+                    if (matches && matches.length) {
+                        return;
+                    }
+                    matches = page.text.match(CHECK_PROPERTY.cond2);
+                    if (matches && matches.length) {
+                        page.isSST = true;
+                    }
+                    else {
+                        page.isRST = true;
+                    }
+                    let items = [];
+                    let _PROPERTY = Object.assign({}, DATA_PROPERTY);
+                    parseValue(_PROPERTY, page, page.text.toString(), items);
+                    page.items = Object.assign([], items);
+                }
+            });
+            resolve(pages);
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+// 6.
+const stepSix = (pages) => {
+    return new Promise(async (resolve, reject) => {
+        console.log('stepSix');
+        try {
+            let _headers = Object.assign([], headers);
+            // group elemnet 데이터 파싱
+            const DATA_PAIR_SIZE = 2; // 2가지가 한 쌍 (conc. 와 cps) 
+            let elementObj = {};
+            let dataCnt = 0;
+            pages.forEach(page => {
+                if (page.isSST || page.isRST) {
+                    if (page.elements.length) {
+                        for (let _idx = 0, el_size = 1; _idx < repeatCnt; _idx += 1, el_size += 1) {
+                            let el_key = page.elements[_idx];
+                            if (!elementObj[el_key]) {
+                                elementObj[el_key] = [];
+                            }
+                            let _data = page.items[1].search.value.toString().split('_');
+                            let obj = {};
+                            obj.key = page.items[DATA_PAIR_SIZE * el_size].search.key;
+                            obj.value = page.items[DATA_PAIR_SIZE * el_size].search.value;
+                            obj.unit = _headers[DATA_PAIR_SIZE * el_size].unit;
+                            if (_data[0].indexOf('SST') < 0) {
+                                obj.batchNo = _data[0];
+                                obj.seq = _data[1];
+                            }
+                            elementObj[el_key].push(obj);
+                            dataCnt += 1;
+                        }                    
+                    }
+                }
+            });
+            // object 생성
+            let resultObj = {
+                SST: []
+                , STD: []
+                , RST: []
+            };
+            let maxDataCnt = dataCnt / uniques.length;
+            let cnt = 0;
+            let extractData = (_elementObj, cnt, _resultArr) => {
+                if (cnt == maxDataCnt) {
+                    return;
+                }
+                let el = {};
+                Object.keys(elementObj).forEach(elementName => {
+                    let item = elementObj[elementName][cnt];
+                    el[elementName] = {
+                        key: item.key,
+                        value: item.value,
+                        unit: item.unit,
+                        batchNo: item.batchNo || '',
+                        seq: item.seq || '',
+                    };
+                });
+                _resultArr.push(el);
+                extractData(_elementObj, cnt + 1, _resultArr);
+            }
+            let arr = [];
+            extractData(elementObj, cnt, arr);
+            let _rst = [];
+            arr.forEach((item, idx) => {
+                if (idx > 0 && idx < arr.length -1) {
+                    // rst
+                    let _firstKey = Object.keys(item)[0];
+                    let _batchNo = item[_firstKey].batchNo;
+                    let _el = {};
+                    Object.keys(item).forEach(_element => {
+                        _el[_element] = {
+                            unit: item[_element].unit,
+                            seq: item[_element].seq,
+                        } 
+                        _el[_element][item[_element].key] = item[_element].value;
+                    });
+                    let _obj = {
+                        BATCHNO: _batchNo,
+                        ..._el,
+                    };
+                    resultObj.RST.push(_obj);
+                }
+                else {
+                    // sst
+                    let _el = {};
+                    Object.keys(item).forEach(_element => {
+                        _el[_element] = {
+                            unit: item[_element].unit,
+                        } 
+                        _el[_element][item[_element].key] = item[_element].value;
+                    });
+                    resultObj.SST.push(_el);
+                }
+            });
+            let valid = ajv.validate(schema, resultObj);
+            if (valid) {
+                if (!resultObj.RST) {
+                    resultObj.RST = [];
+                }
+            }
+            resultObj.mappings = Object.assign(mappings, schema.mappings || {});
+            resolve({
+                smplData: resultObj,
+                parsData: resultObj,
+                parsErrMsg: ajv.errors || '',
+                parsYn: valid ? 'Y' : 'N'
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+// 7.
+const stepSeven = (data) => {
+    return new Promise(async (resolve, reject) => {
+        console.log('stepSeven');
+        try {
+            let postData = await generatePostData({
+                devPk
+                , fileInfPk
+                , parsYn: data.parsYn
+                , isTest
+                , smplData: JSON.stringify(data.smplData, null, 0) 
+                , parsData: JSON.stringify(data.parsData, null, 0)
+                , parsErrMsg: data.parsErrMsg
+                , userId
+                , comCd
+                , lxExecPk
+                , hostname
+                , port
+	            , lang
+            });
+            if (!postData || postData.status >= 400) {
+                return reject(postData);
+            }
+            let options = generateURLData({
+                path: API.LAS.saveParsData.URL
+                , method: API.LAS.saveParsData.METHOD
+                , hostname
+                , port
+	            , lang
+            });
+            let { responseJSON, responseText } = await fetch(postData, options);
+            if (responseJSON.status >= 400) {
+                // 파싱 에러로 처리
+                reject(responseJSON);
+            }
+            else {
+                try {
+                    resolve();
+                }
+                catch (error) {
+                    reject(error);
+                }
+            }
+        }
+        catch (error) {
+            reject(error);
+        }
+    });
+}
+// step 실행
+stepOne(devPk, fileInfPk)
+	.then(data => stepTwo(data))
+	.then(data => stepThree(data))
+	.then(data => stepFour(data))
+	.then(data => stepFive(data))
+	.then(data => stepSix(data))
+	.then(data => stepSeven(data))
+    .then(data => {
+        console.log('parsing end')
+        process.exit(0);
+    })
+    .catch(async error => {
+        console.log('error ', error)
+        if (!isTest) {
+            // 파싱 실패 처리: api 호출
+            let parsErrMsg = error;
+            if (error.error || error.message) {
+            	if (typeof error == 'object') {
+                    if (error.stack) {
+                        parsErrMsg = JSON.stringify({
+                            message: error.message
+                            , devPk
+                            , fileInfPk
+                            , comCd
+                        });
+                    }
+                    else {
+                        parsErrMsg = JSON.stringify(error, null, 0);
+                    }
+            	}
+            	else {
+            		if (error.error) {
+                		parsErrMsg = error.error;
+            		}
+            		else if (error.message) {
+                		parsErrMsg = error.message;
+            		}
+            	}
+            }
+            else if (error.length) {
+                parsErrMsg = JSON.stringify(error, null, 0);
+            }
+            else if (error.msg) {
+                parsErrMsg = error.msg;
+            }
+            else {
+            	parsErrMsg = 'unknown error';
+            }
+            let postData
+            if (userId) {
+                postData = await generatePostData({
+                    parsErrMsg
+                    , devPk
+                    , fileInfPk
+                    , parsYn: "N"
+                    , comCd
+                    , userId
+                    , hostname
+                    , port
+    	            , lang
+                });
+            }
+            if (!postData || postData.status >= 400) {
+                postData = await generatePostData({
+                    parsErrMsg
+                    , devPk
+                    , fileInfPk
+                    , parsYn: "N"
+                    , comCd
+                    , userId: apiInfo.reportId
+                    , hostname
+                    , port
+    	            , lang
+                });
+            }
+            let options = generateURLData({
+                path: API.LAS.saveParsData.URL
+                , method: API.LAS.saveParsData.METHOD
+                , hostname
+                , port
+	            , lang
+            })
+            let { responseJSON, responseText } = await fetch(postData, options);
+            if (responseJSON.status >= 400) {
+                console.log(responseJSON);
+            }
+            else {
+                console.log(responseJSON);
+            }
+        }
+        process.exit(1);
+    })
+
